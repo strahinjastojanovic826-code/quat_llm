@@ -165,4 +165,4 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 ### 💼 Commercial Licensing
 If you intend to use `qllm` in a proprietary commercial product, SaaS, or closed-source environment without being bound by the copyleft requirements of AGPL-3.0, **dual-licensing options are available**. 
 
-Please reach out via email at **tvoj.email@example.com** to discuss a commercial license.
+Please reach out via email at **strahinjastojanovic826@gmail.com** to discuss a commercial license.
