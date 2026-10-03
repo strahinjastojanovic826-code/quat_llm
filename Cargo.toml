@@ -6,7 +6,7 @@ authors = ["strale <strahinjastojanovic826@gmail.com>"]
 description = "A high-performance, lightweight 2-bit quantized LLM inference engine in Rust"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/tvoj_username/qllm"
+repository = "https://github.com/strahinjastojanovic826-code/quat_llm"
 keywords = ["llm", "quantization", "transformer", "ai", "inference"]
 categories = ["science::artificial-intelligence", "algorithms", "data-structures"]
 
