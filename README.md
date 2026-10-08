@@ -6,23 +6,29 @@
 
 ## ⚡ Key Features
 
-- **Extreme Memory Efficiency**: Packs 4 values into a single byte using custom 2-bit representation (`Bit2Array`), saving up to 75%–87.5% RAM/VRAM compared to FP32/FP16.
-- **Blazing Fast**: Optimized Rust engine hitting over **200+ tokens/sec** on standard CPU architectures for lightweight inference loops.
+- **Extreme Memory Efficiency**: Packs 4 values into a single byte using custom 2-bit representation (`Bit2Array`), saving up to 75%-87.5% RAM/VRAM compared to FP32/FP16.
+- **Blazing Fast Inference**: Optimized Rust engine supporting high-throughput token generation with custom SIMD-friendly vector operations and multi-threaded Rayon matrix multiplication.
 - **Cross-Language Support**: Easily integrate the engine into Rust, Python, C, C++, and C#.
 - **Modular Architecture**: Includes custom implementations of Tokenizer, Softmax, Dot-Product operations, Attention mechanisms, and Transformer blocks.
-- **Extensive Testing**: Comes with robust unit tests and stress-testing suites for large-scale matrices and throughput benchmarking.
+- **Comprehensive Multi-Tiered Testing**: Built-in test suites covering basic unit math, error/out-of-bounds protection, autoregressive KV-cache generation, and extreme concurrency stress tests.
 
 ---
 
 ## 📊 Performance Benchmarks (Stress Tests)
 
-Running on standard CPU configurations:
+Running on standard CPU configurations (Release Mode `--release`):
+
+### 🔹 Baseline Config (`hidden_dim = 128`, 2 layers)
 - **Memory Footprint**: 10 Million 2-bit elements consume **~2.38 MB** of RAM.
-- **Large Layer Inference (`4096x4096` / 16.7M weights)**:
-  - Initialization Time: `~2.1 ms`
-  - Forward Pass: `~300 ms`
-  - Weight Memory: `4.0 MB` (vs `64.0 MB` in FP32)
-- **Token Generation Speed**: `~211 tokens/sec` (on baseline config).
+- **Initialization Time**: ~2.1 ms
+- **Forward Pass**: ~300 µs
+- **Token Generation Speed**: **~200+ tokens/sec**
+
+### 💥 Extreme Stress Config (`hidden_dim = 1024`, 8 layers, Vocab: 32k)
+- **Allocated KV-Cache Memory**: **~3.12 MB** (100 steps)
+- **Throughput (Debug Mode)**: ~1.77 tok/s (unoptimized with full debug instrumentation)
+- **Throughput (Release Mode)**: **~25-50+ tok/s** (dependent on CPU SIMD/AVX capabilities)
+- **Robustness**: 100% pass rate under parallel thread contention (Rayon execution)
 
 ---
 
@@ -44,7 +50,7 @@ Running on standard CPU configurations:
 Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
-quat_llm = { version = "0.1.0", path = "." }
+quat_llm = { version = "0.2.0", path = "." }
 ```
 
 Usage in Rust code:
@@ -152,6 +158,10 @@ Run tests (including stress and performance benchmarks):
 cargo test -- --nocapture
 ```
 
+```bash
+cargo test --release -- --nocapture
+```
+
 ---
 
 ## 📄 License & Commercial Use Notice
@@ -165,4 +175,4 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 ### 💼 Commercial Licensing
 If you intend to use `qllm` in a proprietary commercial product, SaaS, or closed-source environment without being bound by the copyleft requirements of AGPL-3.0, **dual-licensing options are available**. 
 
-Please reach out via email at **tvoj.email@example.com** to discuss a commercial license.
+Please reach out via email at **strahinjastojanovic826@gmail.com** to discuss a commercial license.

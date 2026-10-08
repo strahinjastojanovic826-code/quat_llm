@@ -1,11 +1,12 @@
 use crate::array::Bit2Array;
 use crate::bit2::Bit2Val;
+use crate::error::{QuatError, Result};
+use rayon::prelude::*;
 
-/// 2-bit Linear Layer (Weight matrix + forward pass)
+#[derive(Debug, Clone)]
 pub struct Bit2Linear {
     pub in_features: usize,
     pub out_features: usize,
-    /// Vector of 2-bit packed rows (one Bit2Array per output feature)
     pub weights: Vec<Bit2Array>,
 }
 
@@ -22,20 +23,31 @@ impl Bit2Linear {
         }
     }
 
-    /// Sets a weight value in the linear layer matrix
-    pub fn set_weight(&mut self, row: usize, col: usize, val: Bit2Val) {
-        if row < self.out_features {
-            self.weights[row].set(col, val);
+    pub fn set_weight(&mut self, row: usize, col: usize, val: Bit2Val) -> Result<()> {
+        if row >= self.out_features {
+            return Err(QuatError::DimensionMismatch {
+                expected: self.out_features,
+                got: row,
+            });
         }
+        self.weights[row].set(col, val)
     }
 
-    /// Forward pass: multiplies input vector with 2-bit weight matrix
-    pub fn forward(&self, input: &[f32], output: &mut [f32]) {
-        assert_eq!(input.len(), self.in_features);
-        assert_eq!(output.len(), self.out_features);
-
-        for (row_idx, row_weights) in self.weights.iter().enumerate() {
-            output[row_idx] = row_weights.dot_f32(input);
+    pub fn forward(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        if input.len() != self.in_features || output.len() != self.out_features {
+            return Err(QuatError::DimensionMismatch {
+                expected: self.in_features,
+                got: input.len(),
+            });
         }
+
+        output
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(row_idx, out_val)| {
+                *out_val = self.weights[row_idx].dot_f32(input).unwrap_or(0.0);
+            });
+
+        Ok(())
     }
 }
