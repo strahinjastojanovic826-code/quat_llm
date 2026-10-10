@@ -1,6 +1,6 @@
 [package]
 name = "quat_llm"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["strale <strahinjastojanovic826@gmail.com>"]
 description = "A high-performance, lightweight 2-bit quantized LLM inference engine in Rust"
@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rayon = "1.8"
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
+memmap2 = "0.9"
 
 [features]
 default = []

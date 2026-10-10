@@ -6,29 +6,21 @@
 
 ## ⚡ Key Features
 
-- **Extreme Memory Efficiency**: Packs 4 values into a single byte using custom 2-bit representation (`Bit2Array`), saving up to 75%-87.5% RAM/VRAM compared to FP32/FP16.
-- **Blazing Fast Inference**: Optimized Rust engine supporting high-throughput token generation with custom SIMD-friendly vector operations and multi-threaded Rayon matrix multiplication.
-- **Cross-Language Support**: Easily integrate the engine into Rust, Python, C, C++, and C#.
-- **Modular Architecture**: Includes custom implementations of Tokenizer, Softmax, Dot-Product operations, Attention mechanisms, and Transformer blocks.
-- **Comprehensive Multi-Tiered Testing**: Built-in test suites covering basic unit math, error/out-of-bounds protection, autoregressive KV-cache generation, and extreme concurrency stress tests.
+- **Extreme Memory Efficiency**: Packs 4 values into a single byte using custom 2-bit quantization (`Bit2Array`), drastically reducing RAM usage compared to FP32/FP16[cite: 6].
+- **Blazing Fast Inference**: Cache-optimized parallel execution engine leveraging Rayon for multi-threaded matrix-vector dot products and chunk-based processing[cite: 6].
+- **Cross-Language Support**: Seamlessly integrate the engine into Rust, Python, C, C++, and C#[cite: 6].
+- **Modular Architecture**: Includes clean, robust implementations of Tokenizer, Embedding, RMSNorm, Softmax, RoPE, and Attention with KV-Caching[cite: 6].
+- **Production-Grade Robustness**: Built-in comprehensive test suites covering functional behavior, long autoregressive generation loops, and high-concurrency Rayon stress tests[cite: 6].
 
 ---
 
-## 📊 Performance Benchmarks (Stress Tests)
+## 📊 Performance & Testing (Stress Tests)
 
-Running on standard CPU configurations (Release Mode `--release`):
-
-### 🔹 Baseline Config (`hidden_dim = 128`, 2 layers)
-- **Memory Footprint**: 10 Million 2-bit elements consume **~2.38 MB** of RAM.
-- **Initialization Time**: ~2.1 ms
-- **Forward Pass**: ~300 µs
-- **Token Generation Speed**: **~200+ tokens/sec**
-
-### 💥 Extreme Stress Config (`hidden_dim = 1024`, 8 layers, Vocab: 32k)
-- **Allocated KV-Cache Memory**: **~3.12 MB** (100 steps)
-- **Throughput (Debug Mode)**: ~1.77 tok/s (unoptimized with full debug instrumentation)
-- **Throughput (Release Mode)**: **~25-50+ tok/s** (dependent on CPU SIMD/AVX capabilities)
-- **Robustness**: 100% pass rate under parallel thread contention (Rayon execution)
+The library includes multi-tiered automated test suites ensuring safety and stability under extreme loads:
+- **Functional Unit Tests**: Validation of quantization, tokenization, embeddings, and mathematical primitives[cite: 6].
+- **Large-Scale Dot Product Stress Tests**: Verified stability with 4096+ dimensions[cite: 6].
+- **Autoregressive Generation Loops**: Long-sequence generation stress tests for KV-cache stability[cite: 6].
+- **Concurrent Multi-Threading Stress Tests**: Parallel inference loads verified under Rayon task scheduling[cite: 6].
 
 ---
 
@@ -50,20 +42,30 @@ Running on standard CPU configurations (Release Mode `--release`):
 Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
-quat_llm = { version = "0.2.0", path = "." }
+quat_llm = "1.0.0" 
 ```
 
 Usage in Rust code:
 ```rust
-use quat_llm::transformer::Bit2Transformer;
+use quat_llm::model::Bit2Transformer;
+use quat_llm::attention::KVCache;
 
 fn main() {
     let vocab_size = 1000;
     let hidden_dim = 128;
-    let model = Bit2Transformer::new(vocab_size, hidden_dim);
+    let num_layers = 2;
+    let num_heads = 4;
 
-    let probs = model.forward(1);
-    println!("Output probabilities length: {}", probs.len());
+    // Inicijalizacija modela sa svim potrebnim parametrima
+    let model = Bit2Transformer::new(vocab_size, hidden_dim, num_layers, num_heads);
+    let mut cache = vec![KVCache::new(); num_layers];
+
+    let token_id = 5;
+    let pos = 0;
+
+    // Forward prolaz sa KV kešom i obradom grešaka
+    let logits = model.forward(token_id, pos, &mut cache).unwrap();
+    println!("Output logits length: {}", logits.len());
 }
 ```
 

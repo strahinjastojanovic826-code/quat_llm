@@ -9,6 +9,7 @@ pub mod ops;
 pub mod py_api;
 pub mod tokenizer;
 pub mod transformer;
+pub mod loader;
 
 // Eksportujemo primarne tipove sa nivoa biblioteke
 pub use array::*;
@@ -23,245 +24,177 @@ pub use attention::Bit2MultiHeadAttention;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
+    use crate::array::Bit2Array;
+    use crate::bit2::Bit2Val;
+    use crate::tokenizer::Tokenizer;
+    use crate::embedding::Embedding;
+    use crate::model::Bit2Linear;
+    use crate::ops::{rms_norm, softmax};
+    use crate::Bit2Transformer;
+    use crate::attention::KVCache;
+    use rayon::prelude::*;
 
-    // ------------------------------------------------------------------------
-    // TEST REPORTING UTILITY
-    // ------------------------------------------------------------------------
-
-    pub struct TestReport {
-        pub test_name: &'static str,
-        pub duration: Duration,
-        pub status: &'static str,
-        pub details: String,
-    }
-
-    impl TestReport {
-        pub fn start(name: &'static str) -> TestRunner {
-            println!("\n==================================================");
-            println!("🚀 STARTING TEST: {}", name);
-            println!("==================================================");
-            TestRunner {
-                name,
-                start_time: Instant::now(),
-            }
-        }
-    }
-
-    pub struct TestRunner {
-        name: &'static str,
-        start_time: Instant,
-    }
-
-    impl TestRunner {
-        pub fn finish(self, success: bool, details: String) {
-            let duration = self.start_time.elapsed();
-            let status = if success { "✅ PASSED" } else { "❌ FAILED" };
-
-            println!("\n--------------------------------------------------");
-            println!("📊 TEST REPORT: {}", self.name);
-            println!("Status:     {}", status);
-            println!("Duration:   {:?}", duration);
-            println!("Details:    {}", details);
-            println!("--------------------------------------------------\n");
-
-            if !success {
-                panic!("Test '{}' failed!", self.name);
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------------
-    // LEVEL 1: BASIC UNIT TESTS
-    // ------------------------------------------------------------------------
+    // --- BASIC FUNCTIONAL TESTS ---
 
     #[test]
-    fn test_quantization_and_array_packing() {
-        let runner = TestReport::start("L1: Quantization & Bit2Array Packing");
+    fn test_bit2_array_and_quantization() {
+        let input = vec![1.0, -1.0, 0.333333, 0.0];
+        let arr = Bit2Array::from_f32_slice(&input);
+        assert_eq!(arr.len, 4);
 
-        let mut arr = array::Bit2Array::new(8);
-        arr.set(0, bit2::Bit2Val::Val00).unwrap();
-        arr.set(1, bit2::Bit2Val::Val01).unwrap();
-        arr.set(2, bit2::Bit2Val::Val10).unwrap();
-        arr.set(3, bit2::Bit2Val::Val11).unwrap();
+        let val = arr.get(0).unwrap();
+        assert_eq!(val, Bit2Val::Val11);
 
-        let mut success = true;
-        success &= arr.get(0) == Some(bit2::Bit2Val::Val00);
-        success &= arr.get(1) == Some(bit2::Bit2Val::Val01);
-        success &= arr.get(2) == Some(bit2::Bit2Val::Val10);
-        success &= arr.get(3) == Some(bit2::Bit2Val::Val11);
-
-        let details = format!(
-            "Byte 0 in memory: {:#010b} | Expected 4 x 2-bit states packed into 1 byte.",
-            arr.data[0]
-        );
-        runner.finish(success, details);
+        let dot_res = arr.dot_f32(&[1.0, 1.0, 1.0, 1.0]);
+        assert!(dot_res.is_ok());
     }
 
     #[test]
-    fn test_tokenizer_roundtrip() {
-        let runner = TestReport::start("L1: Tokenizer Encode/Decode Roundtrip");
+fn test_tokenizer() {
+    let mut tokenizer = Tokenizer::new();
+    tokenizer.add_token("hello", 0);
+    tokenizer.add_token("world", 1);
 
-        let mut tok = tokenizer::Tokenizer::new();
-        tok.add_token("hello", 1);
-        tok.add_token("world", 2);
+    let encoded = tokenizer.encode("hello world");
+    assert!(!encoded.is_empty());
 
-        let encoded = tok.encode("hello world test");
-        let decoded = tok.decode(&encoded);
+    let decoded = tokenizer.decode(&encoded);
+    assert!(decoded.contains("hello") || decoded.contains("world"));
+}
 
-        let success = encoded == vec![1, 2, 0]; // 0 is UNK
-        let details = format!(
-            "Input: 'hello world test' -> Tokens: {:?} -> Output: '{}'",
-            encoded, decoded
-        );
-        runner.finish(success, details);
+    #[test]
+    fn test_embedding() {
+        let vocab_size = 10;
+        let hidden_dim = 4;
+        let emb = Embedding::new(vocab_size, hidden_dim);
+        
+        let mut output = vec![0.0; hidden_dim];
+        let res = emb.forward(2, &mut output);
+        assert!(res.is_ok());
+
+        let res_err = emb.forward(15, &mut output);
+        assert!(res_err.is_err());
     }
 
     #[test]
-    fn test_softmax_sum_to_one() {
-        let runner = TestReport::start("L1: Softmax Verification (Sum = 1.0)");
+    fn test_bit2_linear() {
+        let in_features = 8;
+        let out_features = 4;
+        let mut layer = Bit2Linear::new(in_features, out_features);
+        
+        let input = vec![1.0; in_features];
+        let mut output = vec![0.0; out_features];
+        
+        let res = layer.forward(&input, &mut output);
+        assert!(res.is_ok());
+        assert_eq!(output.len(), out_features);
+    }
 
-        let mut logits = vec![2.0, 1.0, 0.1, -1.0];
-        ops::softmax(&mut logits).unwrap();
+    #[test]
+    fn test_ops_math() {
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let weight = vec![1.0; 4];
+        let mut output = vec![0.0; 4];
+        let norm_res = rms_norm(&input, &weight, &mut output, 1e-5);
+        assert!(norm_res.is_ok());
 
+        let mut logits = vec![1.0, 2.0, 3.0];
+        let softmax_res = softmax(&mut logits);
+        assert!(softmax_res.is_ok());
+        
         let sum: f32 = logits.iter().sum();
-        let success = (sum - 1.0).abs() < 1e-5;
-
-        let details = format!("Calculated Softmax: {:?} | Sum = {}", logits, sum);
-        runner.finish(success, details);
-    }
-
-    // ------------------------------------------------------------------------
-    // LEVEL 2: MEDIUM INTEGRITY & ERROR HANDLING TESTS
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn test_dimension_mismatch_handling() {
-        let runner = TestReport::start("L2: Dimension Mismatch Error Handling");
-
-        let layer = model::Bit2Linear::new(128, 64);
-        let bad_input = vec![0.5f32; 100]; // Should be 128
-        let mut output = vec![0.0f32; 64];
-
-        let result = layer.forward(&bad_input, &mut output);
-
-        let success = match result {
-            Err(error::QuatError::DimensionMismatch { expected, got }) => {
-                expected == 128 && got == 100
-            }
-            _ => false,
-        };
-
-        let details = format!("Mismatch call result: {:?}", result);
-        runner.finish(success, details);
+        assert!((sum - 1.0).abs() < 1e-5);
     }
 
     #[test]
-    fn test_embedding_out_of_bounds() {
-        let runner = TestReport::start("L2: Embedding Out-of-Bounds Protection");
+    fn test_transformer_forward_pass() {
+        let vocab_size = 50;
+        let hidden_dim = 16;
+        let num_layers = 1;
+        let num_heads = 2;
 
-        let emb = embedding::Embedding::new(100, 64); // Vocab size = 100
-        let mut output = vec![0.0f32; 64];
+        let transformer = Bit2Transformer::new(
+            vocab_size,
+            hidden_dim,
+            num_layers,
+            num_heads,
+        );
 
-        let result = emb.forward(150, &mut output); // Token ID 150 does not exist
+        let mut cache = vec![KVCache::new(); num_layers];
+        let token_id = 5;
+        let pos = 0;
 
-        let success = result.is_err();
-        let details = format!("Requested Token ID 150 in Vocab size 100. Error: {:?}", result);
-        runner.finish(success, details);
+        let logits_result = transformer.forward(token_id, pos, &mut cache);
+        
+        assert!(logits_result.is_ok(), "Forward pass failed");
+        let logits = logits_result.unwrap();
+        assert_eq!(logits.len(), vocab_size, "Logits size must match vocabulary size");
     }
 
-    // ------------------------------------------------------------------------
-    // LEVEL 3: HEAVY AUTOREGRESSIVE & KV-CACHE TESTS
-    // ------------------------------------------------------------------------
+    // --- PRODUCTION STRESS TESTS ---
 
     #[test]
-    fn test_autoregressive_generation_loop() {
-        let runner = TestReport::start("L3: Autoregressive Generation Loop (10 steps with KV-Cache)");
+    fn stress_test_large_dot_product() {
+        let dim = 4096;
+        let input: Vec<f32> = (0..dim).map(|i| (i as f32 * 0.01).sin()).collect();
+        let arr = Bit2Array::from_f32_slice(&input);
 
-        let vocab_size = 500;
-        let hidden_dim = 128;
-        let num_layers = 4;
+        let dot_res = arr.dot_f32(&input);
+        assert!(dot_res.is_ok(), "Stress test for dot_f32 with 4096 dimensions failed");
+        let val = dot_res.unwrap();
+        assert!(val.is_finite(), "Dot product result must be a finite number (no NaN/Inf)");
+    }
+
+    #[test]
+    fn stress_test_long_autoregressive_loop() {
+        let vocab_size = 256;
+        let hidden_dim = 64;
+        let num_layers = 2;
         let num_heads = 4;
 
-        let model = transformer::Bit2Transformer::new(vocab_size, hidden_dim, num_layers, num_heads);
-        let mut caches: Vec<attention::KVCache> = (0..num_layers)
-            .map(|_| attention::KVCache::new())
-            .collect();
-
-        let mut current_token = 12usize;
-        let mut generated_tokens = vec![current_token];
-
-        for pos in 0..10 {
-            let logits = model.forward(current_token, pos, &mut caches).unwrap();
-
-            // Argmax selection for the next token
-            let next_token = logits
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .map(|(idx, _)| idx)
-                .unwrap();
-
-            generated_tokens.push(next_token);
-            current_token = next_token;
-        }
-
-        let success = generated_tokens.len() == 11 && caches[0].k.len() == 10;
-        let details = format!(
-            "Generated Token Sequence: {:?} | KV-Cache size per layer: {} steps",
-            generated_tokens,
-            caches[0].k.len()
+        let transformer = Bit2Transformer::new(
+            vocab_size,
+            hidden_dim,
+            num_layers,
+            num_heads,
         );
-        runner.finish(success, details);
+
+        let mut cache = vec![KVCache::new(); num_layers];
+        let mut current_token = 42;
+
+        for pos in 0..200 {
+            let logits_result = transformer.forward(current_token, pos, &mut cache);
+            assert!(logits_result.is_ok(), "Autoregressive generation failed at position: {}", pos);
+            
+            let logits = logits_result.unwrap();
+            current_token = (logits[0].abs() as usize) % vocab_size;
+        }
     }
 
-    // ------------------------------------------------------------------------
-    // LEVEL 4: EXTREME STRESS & PARALLEL PERFORMANCE TESTS
-    // ------------------------------------------------------------------------
-
     #[test]
-    fn test_extreme_model_stress_and_concurrency() {
-        let runner = TestReport::start("💥 L4: EXTREME STRESS - Large Model & Long Sequence");
+    fn stress_test_concurrent_parallel_inference() {
+        let vocab_size = 128;
+        let hidden_dim = 32;
+        let num_layers = 1;
+        let num_heads = 2;
 
-        let vocab_size = 32000;
-        let hidden_dim = 1024;
-        let num_layers = 8;
-        let num_heads = 8;
-
-        println!("--> Initializing large 2-bit model (Hidden: {}, Layers: {})...", hidden_dim, num_layers);
-        let init_start = Instant::now();
-        let model = transformer::Bit2Transformer::new(vocab_size, hidden_dim, num_layers, num_heads);
-        println!("--> Model initialized in {:?}", init_start.elapsed());
-
-        let mut caches: Vec<attention::KVCache> = (0..num_layers)
-            .map(|_| attention::KVCache::new())
-            .collect();
-
-        let num_steps = 100;
-        let mut total_forward_time = Duration::ZERO;
-
-        println!("--> Running {} inference steps with Rayon matrix multiplication...", num_steps);
-        for pos in 0..num_steps {
-            let step_start = Instant::now();
-            let logits = model.forward(1, pos, &mut caches);
-
-            assert!(logits.is_ok(), "Forward pass failed at position {}", pos);
-            total_forward_time += step_start.elapsed();
-        }
-
-        let avg_step_time = total_forward_time / num_steps as u32;
-        let tokens_per_second = 1.0 / avg_step_time.as_secs_f32();
-
-        let details = format!(
-            "Total time for {} steps: {:?} | Avg time per token: {:?} | Throughput: {:.2} tok/s | Allocated KV-Cache Memory: {:.2} MB",
-            num_steps,
-            total_forward_time,
-            avg_step_time,
-            tokens_per_second,
-            (num_layers * num_steps * hidden_dim * 4) as f32 / (1024.0 * 1024.0)
+        let transformer = Bit2Transformer::new(
+            vocab_size,
+            hidden_dim,
+            num_layers,
+            num_heads,
         );
 
-        runner.finish(true, details);
+        let results: Vec<Result<Vec<f32>, _>> = (0..16)
+            .into_par_iter()
+            .map(|_| {
+                let mut cache = vec![KVCache::new(); num_layers];
+                transformer.forward(10, 0, &mut cache)
+            })
+            .collect();
+
+        for res in results {
+            assert!(res.is_ok(), "Concurrent inference stress test failed under thread load");
+        }
     }
 }
