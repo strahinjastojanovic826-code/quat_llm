@@ -11,6 +11,9 @@
 - **Cross-Language Support**: Seamlessly integrate the engine into Rust, Python, C, C++, and C#[cite: 6].
 - **Modular Architecture**: Includes clean, robust implementations of Tokenizer, Embedding, RMSNorm, Softmax, RoPE, and Attention with KV-Caching[cite: 6].
 - **Production-Grade Robustness**: Built-in comprehensive test suites covering functional behavior, long autoregressive generation loops, and high-concurrency Rayon stress tests[cite: 6].
+- **Stable SIMD Optimization**: Hardware-accelerated AVX2 intrinsics running on stable Rust for maximum execution speed without requiring nightly features.
+- **Asynchronous Streaming**: Non-blocking token generation and real-time streaming capabilities powered by Tokio channels.
+- **Standardized Weight Loading**: Seamless integration with `safetensors` for secure and efficient model loading.
 
 ---
 
@@ -42,7 +45,7 @@ The library includes multi-tiered automated test suites ensuring safety and stab
 Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
-quat_llm = "1.0.0" 
+quat_llm = "1.1.0" 
 ```
 
 Usage in Rust code:
@@ -66,6 +69,38 @@ fn main() {
     // Forward prolaz sa KV kešom i obradom grešaka
     let logits = model.forward(token_id, pos, &mut cache).unwrap();
     println!("Output logits length: {}", logits.len());
+}
+```
+---
+
+### Asynchronous Streaming Example:
+```rust
+use quat_llm::model::Bit2Transformer;
+use quat_llm::attention::KVCache;
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let vocab_size = 1000;
+    let hidden_dim = 128;
+    let num_layers = 2;
+    let num_heads = 4;
+
+    let transformer = Bit2Transformer::new(vocab_size, hidden_dim, num_layers, num_heads);
+    let mut cache = vec![KVCache::new(); num_layers];
+    let prompt_tokens = vec![1, 2, 3];
+
+    let (tx, mut rx) = mpsc::channel(10);
+
+    // Asinhrono generisanje i striming tokena
+    transformer.generate_stream(&prompt_tokens, 10, &mut cache, tx).await?;
+
+    // Čitanje generisanih tokena u realnom vremenu
+    while let Some(token) = rx.recv().await {
+        println!("Strimovani token ID: {}", token);
+    }
+
+    Ok(())
 }
 ```
 

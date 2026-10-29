@@ -1,11 +1,11 @@
 [package]
 name = "quat_llm"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 authors = ["strale <strahinjastojanovic826@gmail.com>"]
 description = "A high-performance, lightweight 2-bit quantized LLM inference engine in Rust"
 readme = "README.md"
-license = "AGPL-3.0-or-later"
+license = "AGPL-3.0-only"
 repository = "https://github.com/strahinjastojanovic826-code/quat_llm"
 keywords = ["llm", "quantization", "transformer", "ai", "inference"]
 categories = ["science", "algorithms", "data-structures"]
@@ -17,6 +17,8 @@ crate-type = ["cdylib", "rlib"]
 rayon = "1.8"
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
 memmap2 = "0.9"
+safetensors = "0.4"
+tokio = { version = "1.0", features = ["full"] }
 
 [features]
 default = []

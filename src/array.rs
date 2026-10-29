@@ -1,6 +1,8 @@
 use crate::bit2::Bit2Val;
 use crate::error::{QuatError, Result};
 use rayon::prelude::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
 #[derive(Debug, Clone)]
 pub struct Bit2Array {
@@ -33,6 +35,86 @@ impl Bit2Array {
         arr
     }
 
+    pub fn dot_f32(&self, input: &[f32]) -> Result<f32> {
+        if self.len != input.len() {
+            return Err(QuatError::DimensionMismatch {
+                expected: self.len,
+                got: input.len(),
+            });
+        }
+
+        // Provera da li procesor podržava AVX2 u realnom vremenu
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: Pozivamo unsafe AVX2 kod samo ako je provereno da procesor podržava AVX2
+                return unsafe { Ok(self.dot_f32_avx2(input)) };
+            }
+        }
+
+        // Fallback (rezervna varijanta) za procesore bez AVX2 podrške
+        self.dot_f32_scalar(input)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn dot_f32_avx2(&self, input: &[f32]) -> f32 { unsafe {
+        let mut unpacked = [0.0f32; 8];
+        let mut sum_vec = _mm256_setzero_ps();
+        let chunks = self.len / 8;
+
+        for i in 0..chunks {
+            let base_idx = i * 8;
+            
+            // Otpakivanje 8 elemenata iz 2-bitnih pakovanih bajtova
+            for j in 0..8 {
+                let idx = base_idx + j;
+                let byte_idx = idx / 4;
+                let bit_shift = (idx % 4) * 2;
+                let b_val = (self.data[byte_idx] >> bit_shift) & 0b11;
+                unpacked[j] = Bit2Val::from_u8(b_val).to_f32();
+            }
+
+            // Učitavanje u AVX registre (8 x f32 odjednom)
+            let w_reg = _mm256_loadu_ps(unpacked.as_ptr());
+            let i_reg = _mm256_loadu_ps(input[base_idx..].as_ptr());
+
+            // FMA / Množenje i sabiranje u jednom ciklusu
+            let prod = _mm256_mul_ps(w_reg, i_reg);
+            sum_vec = _mm256_add_ps(sum_vec, prod);
+        }
+
+        // Horizontalno sakupljanje rezultata iz 256-bitnog registra
+        let mut temp = [0.0f32; 8];
+        _mm256_storeu_ps(temp.as_mut_ptr(), sum_vec);
+        let mut total_sum: f32 = temp.iter().sum();
+
+        // Obrada ostatka elemenata ako dužina nije deljiva sa 8
+        for idx in (chunks * 8)..self.len {
+            let byte_idx = idx / 4;
+            let bit_shift = (idx % 4) * 2;
+            let b_val = (self.data[byte_idx] >> bit_shift) & 0b11;
+            let weight = Bit2Val::from_u8(b_val).to_f32();
+            total_sum += weight * input[idx];
+        }
+
+        total_sum * self.scale
+    }}
+
+    // Standardna skalarna petlja kao bezbedni fallback
+    fn dot_f32_scalar(&self, input: &[f32]) -> Result<f32> {
+        let mut total_sum = 0.0f32;
+        for idx in 0..self.len {
+            let byte_idx = idx / 4;
+            let bit_shift = (idx % 4) * 2;
+            let b_val = (self.data[byte_idx] >> bit_shift) & 0b11;
+            let weight = Bit2Val::from_u8(b_val).to_f32();
+            total_sum += weight * input[idx];
+        }
+        Ok(total_sum * self.scale)
+    }
+
+
     /// Safely retrieves a 2-bit value at a given index
     #[inline(always)]
     pub fn get(&self, index: usize) -> Option<Bit2Val> {
@@ -61,38 +143,29 @@ impl Bit2Array {
         self.data[byte_idx] = (self.data[byte_idx] & mask) | (val_u8 << bit_shift);
         Ok(())
     }
+}
 
-    /// Fast parallelized dot product using Rayon (Production-Ready & Cache-Optimized)
-    pub fn dot_f32(&self, input: &[f32]) -> Result<f32> {
-        if self.len != input.len() {
-            return Err(QuatError::DimensionMismatch {
-                expected: self.len,
-                got: input.len(),
-            });
+#[derive(Debug, Clone)]
+pub struct BlockQuantizedArray {
+    pub data: Vec<u8>,       // 2-bit packed weights
+    pub scales: Vec<f32>,    // One scale factor per block
+    pub block_size: usize,   // e.g., 32 or 64
+    pub len: usize,
+}
+
+impl BlockQuantizedArray {
+    pub fn new(len: usize, block_size: usize) -> Self {
+        let num_blocks = (len + block_size - 1) / block_size;
+        let byte_len = (len + 3) / 4;
+        Self {
+            data: vec![0; byte_len],
+            scales: vec![1.0; num_blocks],
+            block_size,
+            len,
         }
+    }
 
-        let chunk_size = 256;
-        let sum: f32 = self.data
-            .par_chunks(chunk_size / 4)
-            .enumerate()
-            .map(|(chunk_idx, byte_chunk)| {
-                let mut local_sum = 0.0f64;
-                let base_i = chunk_idx * chunk_size;
-
-                for (b_i, &byte) in byte_chunk.iter().enumerate() {
-                    let byte_offset = base_i + (b_i * 4);
-                    for shift in (0..8).step_by(2) {
-                        let val_idx = byte_offset + (shift / 2);
-                        if val_idx < self.len {
-                            let b_val = Bit2Val::from_u8((byte >> shift) & 0b11);
-                            local_sum += (b_val.to_f32() as f64) * (input[val_idx] as f64);
-                        }
-                    }
-                }
-                local_sum as f32
-            })
-            .sum::<f32>();
-
-        Ok(sum * self.scale)
+    pub fn set_block_scale(&mut self, block_idx: usize, scale: f32) {
+        self.scales[block_idx] = scale;
     }
 }

@@ -4,7 +4,7 @@ use crate::error::{QuatError, Result};
 pub struct Embedding {
     pub vocab_size: usize,
     pub hidden_dim: usize,
-    pub weights: Vec<f32>, // Spljoštena matrica dimenzija (vocab_size * hidden_dim)
+    pub weights: Vec<f32>, // Spljoštena matrica dimenzija (vocab_size * hidden_dim)[cite: 7]
 }
 
 impl Embedding {
@@ -12,11 +12,11 @@ impl Embedding {
         Embedding {
             vocab_size,
             hidden_dim,
-            weights: vec![0.1f32; vocab_size * hidden_dim], // Podrazumevana inicijalizacija
+            weights: vec![0.1f32; vocab_size * hidden_dim], // Podrazumevana inicijalizacija[cite: 7]
         }
     }
 
-    /// Čitanje embedding vektora za dati token ID uz proveru granica
+    /// Čitanje embedding vektora za dati token ID uz proveru granica[cite: 7]
     pub fn forward(&self, token_id: usize, output: &mut [f32]) -> Result<()> {
         if token_id >= self.vocab_size {
             return Err(QuatError::DimensionMismatch {
@@ -39,7 +39,7 @@ impl Embedding {
         Ok(())
     }
 
-    /// Postavljanje težina za specifičan token ID (korisno pri učitavanju modela)
+    /// Postavljanje težina za specifičan token ID (korisno pri učitavanju modela)[cite: 7]
     pub fn set_embedding(&mut self, token_id: usize, values: &[f32]) -> Result<()> {
         if token_id >= self.vocab_size {
             return Err(QuatError::DimensionMismatch {
@@ -47,6 +47,7 @@ impl Embedding {
                 got: token_id,
             });
         }
+
         if values.len() != self.hidden_dim {
             return Err(QuatError::DimensionMismatch {
                 expected: self.hidden_dim,

@@ -33,3 +33,26 @@ impl ModelLoader {
     }
 
 }
+
+use safetensors::SafeTensors;
+
+pub struct SafeModelLoader {
+    safetensors: SafeTensors<'static>,
+}
+
+impl SafeModelLoader {
+    pub fn load_from_file(path: &str) -> Result<Self> {
+        let buffer = std::fs::read(path).map_err(|_| QuatError::AllocationFailed)?;
+        // SAFETY: mmap or safe owning reference handling in production
+        let safetensors = SafeTensors::deserialize(Box::leak(buffer.into_boxed_slice()))
+            .map_err(|_| QuatError::AllocationFailed)?;
+        
+        Ok(Self { safetensors })
+    }
+
+    pub fn get_tensor_data(&self, tensor_name: &str) -> Result<&[u8]> {
+        let tensor = self.safetensors.tensor(tensor_name)
+            .map_err(|_| QuatError::InvalidPointer)?;
+        Ok(tensor.data())
+    }
+}

@@ -33,6 +33,7 @@ mod tests {
     use crate::Bit2Transformer;
     use crate::attention::KVCache;
     use rayon::prelude::*;
+    use crate::BlockQuantizedArray;
 
     // --- BASIC FUNCTIONAL TESTS ---
 
@@ -197,4 +198,39 @@ fn test_tokenizer() {
             assert!(res.is_ok(), "Concurrent inference stress test failed under thread load");
         }
     }
+    #[tokio::test]
+async fn test_generate_stream() {
+    let vocab_size = 50;
+    let hidden_dim = 16;
+    let num_layers = 1;
+    let num_heads = 2;
+
+    let transformer = Bit2Transformer::new(vocab_size, hidden_dim, num_layers, num_heads);
+    let mut cache = KVCache::new(); // Pojedinačni KVCache umesto vektora
+    let prompt_tokens = vec![1, 2, 3];
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+    let result = transformer.generate_stream(&prompt_tokens, 5, &mut cache, tx).await;
+    assert!(result.is_ok(), "Asynchronous streaming generation failed");
+
+    let mut received_tokens = 0;
+    while let Some(token) = rx.recv().await {
+        assert!(token < vocab_size, "Generated token ID out of vocabulary range");
+        received_tokens += 1;
+    }
+    assert_eq!(received_tokens, 5, "Expected exactly 5 streamed tokens");
+}
+
+#[test]
+fn test_block_quantized_array() {
+    let len = 64;
+    let block_size = 32;
+    let b_arr = BlockQuantizedArray::new(len, block_size);
+
+    assert_eq!(b_arr.len, len);
+    assert_eq!(b_arr.block_size, block_size);
+    assert_eq!(b_arr.scales.len(), 2, "64 elements with block size 32 should result in exactly 2 scale blocks");
+}
+
 }

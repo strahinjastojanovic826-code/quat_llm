@@ -91,3 +91,44 @@ impl Bit2MultiHeadAttention {
         Ok(())
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct StaticKVCache {
+    pub k_cache: Vec<f32>, // Flat contiguous buffer: [max_seq_len, num_heads, head_dim]
+    pub v_cache: Vec<f32>,
+    pub max_seq_len: usize,
+    pub hidden_dim: usize,
+    pub current_len: usize,
+}
+
+impl StaticKVCache {
+    pub fn new(max_seq_len: usize, hidden_dim: usize) -> Self {
+        Self {
+            k_cache: vec![0.0; max_seq_len * hidden_dim],
+            v_cache: vec![0.0; max_seq_len * hidden_dim],
+            max_seq_len,
+            hidden_dim,
+            current_len: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.current_len = 0;
+    }
+
+    pub fn append(&mut self, k_data: &[f32], v_data: &[f32], pos: usize) -> Result<()> {
+        if pos >= self.max_seq_len {
+            return Err(QuatError::DimensionMismatch {
+                expected: self.max_seq_len,
+                got: pos,
+            });
+        }
+        let start_idx = pos * self.hidden_dim;
+        let end_idx = start_idx + self.hidden_dim;
+        
+        self.k_cache[start_idx..end_idx].copy_from_slice(k_data);
+        self.v_cache[start_idx..end_idx].copy_from_slice(v_data);
+        self.current_len = self.current_len.max(pos + 1);
+        Ok(())
+    }
+}

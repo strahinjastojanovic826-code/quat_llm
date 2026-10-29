@@ -1,5 +1,3 @@
-use crate::array::Bit2Array;
-use crate::bit2::Bit2Val;
 use crate::model::Bit2Linear;
 use std::slice;
 
@@ -20,11 +18,11 @@ pub unsafe extern "C" fn bit2_linear_create(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bit2_linear_free(ptr: *mut Bit2Linear) {
+pub unsafe extern "C" fn bit2_linear_free(ptr: *mut Bit2Linear) { unsafe {
     if !ptr.is_null() {
         let _ = Box::from_raw(ptr);
     }
-}
+}}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bit2_linear_forward(
@@ -33,7 +31,7 @@ pub unsafe extern "C" fn bit2_linear_forward(
     input_len: usize,
     output_ptr: *mut f32,
     output_len: usize,
-) -> QuatStatus {
+) -> QuatStatus { unsafe {
     if ptr.is_null() || input_ptr.is_null() || output_ptr.is_null() {
         return QuatStatus::ErrNullPointer;
     }
@@ -50,4 +48,4 @@ pub unsafe extern "C" fn bit2_linear_forward(
         Ok(_) => QuatStatus::Success,
         Err(_) => QuatStatus::ErrDimMismatch,
     }
-}
+}}

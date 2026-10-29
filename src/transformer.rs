@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::model::Bit2Linear;
 use crate::QuatError;
 use crate::ops::{rms_norm, silu, softmax};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub struct TransformerLayer {
@@ -103,7 +104,7 @@ impl Bit2Transformer {
 
         // 4. Top-P (Nucleus) Filtering
         let mut cumulative_prob = 0.0;
-        let original_len = probs.len();
+        let _original_len = probs.len();
         probs.retain(|&(_, p)| {
             if cumulative_prob < top_p {
                 cumulative_prob += p;
@@ -120,6 +121,48 @@ impl Bit2Transformer {
         // 5. Stochastic sampling (Weighted random choice)
         // (Simplified deterministic fallback or using random number generator)
         Ok(probs[0].0)
+    }
+
+    pub async fn generate_stream(
+        &self,
+        prompt_tokens: &[usize],
+        max_new_tokens: usize,
+        cache: &mut KVCache,
+        tx: mpsc::Sender<usize>, // Channel to stream generated token IDs
+    ) -> Result<()> {
+        let mut tokens = prompt_tokens.to_vec();
+        let mut current_pos = 0;
+
+        // Warm up KV cache
+        for &token_id in prompt_tokens.iter().take(prompt_tokens.len().saturating_sub(1)) {
+            let _ = self.forward(token_id, current_pos, std::slice::from_mut(cache))?;
+            current_pos += 1;
+        }
+
+        let mut last_token = *tokens.last().ok_or(QuatError::InvalidPointer)?;
+
+        // Autoregressive generation loop with streaming
+        for _ in 0..max_new_tokens {
+            let logits = self.forward(last_token, current_pos, std::slice::from_mut(cache))?;
+            
+            // Simple greedy sample (or top-k/top-p)
+            let next_token = logits.iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(idx, _)| idx)
+                .ok_or(QuatError::InvalidPointer)?;
+
+            // Send token via async channel to the client/UI
+            if tx.send(next_token).await.is_err() {
+                break; // Receiver dropped
+            }
+
+            tokens.push(next_token);
+            last_token = next_token;
+            current_pos += 1;
+        }
+
+        Ok(())
     }
 
     pub fn generate(
