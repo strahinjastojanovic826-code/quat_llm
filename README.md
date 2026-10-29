@@ -210,6 +210,6 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 - **Copyleft clause**: If you modify the code and run it as a network service (e.g., via a cloud API), you must make the source code of your modified version available to your users under the same license.
 
 ### 💼 Commercial Licensing
-If you intend to use `qllm` in a proprietary commercial product, SaaS, or closed-source environment without being bound by the copyleft requirements of AGPL-3.0, **dual-licensing options are available**. 
+If you intend to use `quat_llm` in a proprietary commercial product, SaaS, or closed-source environment without being bound by the copyleft requirements of AGPL-3.0, **dual-licensing options are available**. 
 
 Please reach out via email at **strahinjastojanovic826@gmail.com** to discuss a commercial license.
