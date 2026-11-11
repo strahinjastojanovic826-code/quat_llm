@@ -1,3 +1,4 @@
+use crate::QuatError;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,5 +43,88 @@ impl Bit2Val {
         } else {
             Bit2Val::Val11
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockQuantizedArray {
+    pub data: Vec<u8>,          // Packed 2-bit values (4 per byte)
+    pub scales: Vec<f32>,       // One scale factor per block
+    pub block_size: usize,      // e.g., 32 or 64 weights per block
+    pub len: usize,
+}
+
+impl BlockQuantizedArray {
+    /// Creates a new block-quantized array from f32 slice with group-wise scaling
+    pub fn from_f32_slice(input: &[f32], block_size: usize) -> Self {
+        let len = input.len();
+        let num_blocks = (len + block_size - 1) / block_size;
+        let byte_len = (len + 3) / 4;
+        
+        let mut data = vec![0u8; byte_len];
+        let mut scales = vec![1.0f32; num_blocks];
+
+        for b in 0..num_blocks {
+            let start = b * block_size;
+            let end = std::cmp::min(start + block_size, len);
+            let block = &input[start..end];
+
+            // Find max absolute value in this specific block for precise scaling
+            let max_abs = block.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+            let scale = if max_abs == 0.0 { 1.0 } else { max_abs };
+            scales[b] = scale;
+
+            // Quantize block values
+            for (i, &val) in block.iter().enumerate() {
+                let global_idx = start + i;
+                let q = Bit2Val::quantize(val, scale);
+                
+                let byte_idx = global_idx / 4;
+                let bit_shift = (global_idx % 4) * 2;
+                let val_u8 = q as u8;
+                
+                // Pack into byte safely
+                data[byte_idx] |= val_u8 << bit_shift;
+            }
+        }
+
+        Self {
+            data,
+            scales,
+            block_size,
+            len,
+        }
+    }
+
+    /// Group-wise dot product using per-block scales
+    pub fn dot(&self, input: &[f32]) -> crate::error::Result<f32> {
+        if self.len != input.len() {
+            return Err(QuatError::DimensionMismatch {
+                expected: self.len,
+                got: input.len(),
+            });
+        }
+
+        let mut total_sum = 0.0;
+        let num_blocks = self.scales.len();
+
+        for b in 0..num_blocks {
+            let start = b * self.block_size;
+            let end = std::cmp::min(start + self.block_size, self.len);
+            let scale = self.scales[b];
+
+            let mut block_sum = 0.0;
+            for idx in start..end {
+                let byte_idx = idx / 4;
+                let bit_shift = (idx % 4) * 2;
+                let b_val = (self.data[byte_idx] >> bit_shift) & 0b11;
+                let weight = Bit2Val::from_u8(b_val).to_f32();
+                
+                block_sum += weight * input[idx];
+            }
+            total_sum += block_sum * scale;
+        }
+
+        Ok(total_sum)
     }
 }

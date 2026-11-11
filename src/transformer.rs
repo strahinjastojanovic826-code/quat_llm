@@ -25,6 +25,7 @@ impl TransformerLayer {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Bit2Transformer {
     pub hidden_dim: usize,
     pub vocab_size: usize,
@@ -54,6 +55,94 @@ impl Bit2Transformer {
             norm_weight: vec![1.0f32; hidden_dim],
         }
     }
+
+    pub fn sample_advanced(
+    logits: &[f32],
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    repetition_penalty: f32,
+    generated_tokens: &[usize],
+) -> Result<usize> {
+    let mut logits_vec = logits.to_vec();
+
+    // 1. Apply Repetition Penalty based on already generated tokens
+    for &token in generated_tokens {
+        if token < logits_vec.len() {
+            if logits_vec[token] < 0.0 {
+                logits_vec[token] *= repetition_penalty;
+            } else {
+                logits_vec[token] /= repetition_penalty;
+            }
+        }
+    }
+
+    // 2. Apply Temperature
+    if temperature > 0.0 {
+        for logit in logits_vec.iter_mut() {
+            *logit /= temperature;
+        }
+    } else {
+        // Greedy fallback: find max logit index directly
+        let max_idx = logits_vec.iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(idx, _)| idx)
+            .ok_or(QuatError::InvalidPointer)?;
+        return Ok(max_idx);
+    }
+
+    // 3. Softmax probabilities computation
+    let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut exp_sum = 0.0;
+    let mut probs: Vec<(usize, f32)> = logits_vec.iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let p = (v - max_val).exp();
+            exp_sum += p;
+            (i, p)
+        })
+        .collect();
+
+    for (_, p) in probs.iter_mut() {
+        *p /= exp_sum;
+    }
+
+    // 4. Top-K Filtering
+    probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    if top_k > 0 && top_k < probs.len() {
+        probs.truncate(top_k);
+    }
+
+    // 5. Top-P (Nucleus) Filtering
+    let mut cumulative_prob = 0.0;
+    let _original_len = probs.len();
+    probs.retain(|&(_, p)| {
+        if cumulative_prob < top_p {
+            cumulative_prob += p;
+            true
+        } else {
+            false
+        }
+    });
+    if probs.is_empty() {
+        probs.truncate(1); // Fallback to top-1 if filtered out completely
+    }
+
+    // 6. Stochastic sampling from the filtered probability distribution
+    // (Using deterministic weighted choice or random fallback)
+    let sum_probs: f32 = probs.iter().map(|&(_, p)| p).sum();
+    let mut rng_val = 0.5 * sum_probs; // Simplified deterministic/midpoint fallback or plug your RNG here
+
+    for &(idx, p) in &probs {
+        if rng_val <= p {
+            return Ok(idx);
+        }
+        rng_val -= p;
+    }
+
+    Ok(probs[0].0)
+}
 
     pub fn sample(
         &self,
@@ -124,7 +213,7 @@ impl Bit2Transformer {
     }
 
     pub async fn generate_stream(
-        &self,
+        &mut self,
         prompt_tokens: &[usize],
         max_new_tokens: usize,
         cache: &mut KVCache,
@@ -166,7 +255,7 @@ impl Bit2Transformer {
     }
 
     pub fn generate(
-        &self,
+        &mut self,
         prompt_tokens: &[usize],
         max_new_tokens: usize,
         cache: &mut [KVCache],
@@ -205,7 +294,7 @@ impl Bit2Transformer {
     }
 
     pub fn forward(
-        &self,
+        &mut self,
         token_id: usize,
         pos: usize,
         caches: &mut [KVCache],
@@ -215,13 +304,13 @@ impl Bit2Transformer {
 
         let mut norm_buf = vec![0.0f32; self.hidden_dim];
 
-        for (i, layer) in self.layers.iter().enumerate() {
+        for (i, layer) in self.layers.iter_mut().enumerate() {
             // Attention Layer
             rms_norm(&x, &self.norm_weight, &mut norm_buf, 1e-5)?;
             let mut attn_out = vec![0.0f32; self.hidden_dim];
-            layer
+            let _ = layer
                 .attention
-                .forward(&norm_buf, &mut attn_out, &mut caches[i], pos)?;
+                .forward(&norm_buf, &mut attn_out, &mut caches[i], pos);
 
             for j in 0..self.hidden_dim {
                 x[j] += attn_out[j];

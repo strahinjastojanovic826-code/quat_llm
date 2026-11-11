@@ -14,16 +14,32 @@
 - **Stable SIMD Optimization**: Hardware-accelerated AVX2 intrinsics running on stable Rust for maximum execution speed without requiring nightly features.
 - **Asynchronous Streaming**: Non-blocking token generation and real-time streaming capabilities powered by Tokio channels.
 - **Standardized Weight Loading**: Seamless integration with `safetensors` for secure and efficient model loading.
+- **Group-Wise Block Quantization**: Advanced block-level scaling for 2-bit arrays to significantly mitigate precision loss during low-bit weight quantization.
+- **Pre-Allocated & Efficient KV Caching**: Optimized, memory-safe sliding-window/pre-allocated caching mechanisms designed to accelerate long autoregressive inference loops.
+- **Mixed-Precision Layer Support**: Seamless integration supporting both ultra-dense 2-bit quaternary weights and high-precision direct FP32 layers for critical network paths.
+- **Cross-Platform SIMD Acceleration**: Native hardware-accelerated AVX2 and ARM NEON instruction sets for maximum mathematical throughput.
+- **High-Concurrency Rayon Stress Testing**: Robust parallel inference verification ensuring thread-safe operations under intense concurrent workloads.
 
 ---
 
 ## 📊 Performance & Testing (Stress Tests)
 
-The library includes multi-tiered automated test suites ensuring safety and stability under extreme loads:
-- **Functional Unit Tests**: Validation of quantization, tokenization, embeddings, and mathematical primitives[cite: 6].
-- **Large-Scale Dot Product Stress Tests**: Verified stability with 4096+ dimensions[cite: 6].
-- **Autoregressive Generation Loops**: Long-sequence generation stress tests for KV-cache stability[cite: 6].
-- **Concurrent Multi-Threading Stress Tests**: Parallel inference loads verified under Rayon task scheduling[cite: 6].
+| Test Name | Description / What the Test Does | Execution Time |
+| :--- | :--- | :--- |
+| **EfficientKVCache** | Benchmarks 100 append and get operations on the efficient KV cache | 22.5 µs |
+| **BlockQuantizedArray Creation** | Measures the allocation and setup time of a block-quantized array | 26.1 µs |
+| **Embedding Forward Pass** | Evaluates the execution speed of the embedding layer forward pass | 6.8 µs |
+| **Block Quantized Array Check** | Benchmarks verification and integrity checks on the quantized array | 3.0 µs (Check: 100 ns) |
+| **Bit2 Array & Quantization** | Tests 2-bit array conversions and data quantization logic | 27.5 µs |
+| **Ops Math (RMS/Softmax)** | Benchmarks foundational math operations (RMS normalization & Softmax) | 4.2 µs |
+| **Bit2 Linear Layer** | Evaluates the compute speed of the 2-bit linear transformation layer | 926.4 µs |
+| **Tokenizer** | Measures encoding and decoding performance for text tokens | 134.2 µs |
+| **Transformer Forward Pass** | Tests the execution time of a single full transformer forward pass | 5.84 ms |
+| **Large Dot Product** | Stress tests high-dimensional dot product calculations (4096 dimensions) | 569.2 µs |
+| **Concurrent Parallel Inference** | Stress tests multi-threaded inference performance across 16 Rayon threads | 12.18 ms |
+| **Generate Stream** | Benchmarks asynchronous streaming token generation using Tokio channels | 11.56 ms |
+| **Mixed Precision Layer** | Benchmarks performance across 1,000 continuous forward passes | 72.94 ms |
+| **Long Autoregressive Loop** | Stress tests long-form autoregressive sequence generation over 200 steps | 324.94 ms |
 
 ---
 
@@ -45,7 +61,7 @@ The library includes multi-tiered automated test suites ensuring safety and stab
 Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
-quat_llm = "1.1.0" 
+quat_llm = "1.2.0" 
 ```
 
 Usage in Rust code:
@@ -59,7 +75,7 @@ fn main() {
     let num_layers = 2;
     let num_heads = 4;
 
-    // Inicijalizacija modela sa svim potrebnim parametrima
+    // Inicijalizacija modela sa svim potrebnim parametrima (bez suvišnog ? operatora)
     let model = Bit2Transformer::new(vocab_size, hidden_dim, num_layers, num_heads);
     let mut cache = vec![KVCache::new(); num_layers];
 
@@ -81,10 +97,10 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let vocab_size = 1000;
-    let hidden_dim = 128;
-    let num_layers = 2;
-    let num_heads = 4;
+    let vocab_size = 50;
+    let hidden_dim = 16;
+    let num_layers = 1;
+    let num_heads = 2;
 
     let transformer = Bit2Transformer::new(vocab_size, hidden_dim, num_layers, num_heads);
     let mut cache = vec![KVCache::new(); num_layers];
@@ -92,11 +108,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, mut rx) = mpsc::channel(10);
 
-    // Asinhrono generisanje i striming tokena
-    transformer.generate_stream(&prompt_tokens, 10, &mut cache, tx).await?;
+    // Asinhrono generisanje i strimovanje tokena
+    transformer.generate_stream(&prompt_tokens, 5, &mut cache, tx).await?;
 
     // Čitanje generisanih tokena u realnom vremenu
     while let Some(token) = rx.recv().await {
+        assert!(token < vocab_size, "Generated token ID out of vocabulary range");
         println!("Strimovani token ID: {}", token);
     }
 

@@ -51,3 +51,54 @@ impl Bit2Linear {
         Ok(())
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum LayerWeightType {
+    Bit2(Bit2Linear),
+    // Ovde možeš lako dodati F32Linear ili Bit4Linear kasnije po potrebi
+    F32Direct { weights: Vec<f32>, in_features: usize, out_features: usize },
+}
+
+#[derive(Debug, Clone)]
+pub struct MixedPrecisionLayer {
+    pub weight_type: LayerWeightType,
+}
+
+impl MixedPrecisionLayer {
+    pub fn new_bit2(in_features: usize, out_features: usize) -> Self {
+        Self {
+            weight_type: LayerWeightType::Bit2(Bit2Linear::new(in_features, out_features)),
+        }
+    }
+
+    pub fn new_f32(weights: Vec<f32>, in_features: usize, out_features: usize) -> Self {
+        Self {
+            weight_type: LayerWeightType::F32Direct { weights, in_features, out_features },
+        }
+    }
+
+    pub fn forward(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        match &self.weight_type {
+            LayerWeightType::Bit2(layer) => {
+    let mut res = vec![0.0f32; output.len()]; // koristi dužinu prosleđenog output-a
+    layer.forward(input, &mut res)?;
+    output.copy_from_slice(&res);
+    Ok(())
+}
+            LayerWeightType::F32Direct { weights, in_features, out_features } => {
+                // Standardno množenje matrica za f32 preciznost (kritični slojevi)
+                if input.len() != *in_features || output.len() != *out_features {
+                    return Err(QuatError::DimensionMismatch { expected: *in_features, got: input.len() });
+                }
+                for i in 0..*out_features {
+                    let mut sum = 0.0;
+                    for j in 0..*in_features {
+                        sum += weights[i * *in_features + j] * input[j];
+                    }
+                    output[i] = sum;
+                }
+                Ok(())
+            }
+        }
+    }
+}

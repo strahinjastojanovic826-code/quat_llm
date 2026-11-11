@@ -35,6 +35,62 @@ impl Bit2Array {
         arr
     }
 
+    #[cfg(target_arch = "aarch64")]
+pub fn dot_f32_neon(&self, input: &[f32]) -> Result<f32> {
+    use std::arch::aarch64::*;
+
+    if self.len != input.len() {
+        return Err(Quaterror::DimensionMismatch {
+            expected: self.len,
+            got: input.len(),
+        });
+    }
+
+    unsafe {
+        let mut sum_vec = vdupq_n_f32(0.0);
+        let chunks = self.len / 8;
+        let base_len = chunks * 8;
+
+        for i in 0..chunks {
+            let base_idx = i * 8;
+            let mut unpacked = [0.0f32; 8];
+
+            for j in 0..8 {
+                let idx = base_idx + j;
+                let byte_idx = idx / 4;
+                let bit_shift = (idx % 4) * 2;
+                let b_val = (self.data[byte_idx] >> bit_shift) & 0b11;
+                unpacked[j] = Bit2Val::from_u8(b_val).to_f32();
+            }
+
+            // Load into NEON registers (two 128-bit vectors of 4 floats)
+            let w_reg1 = vld1q_f32(unpacked.as_ptr());
+            let w_reg2 = vld1q_f32(unpacked.as_ptr().add(4));
+            
+            let i_reg1 = vld1q_f32(input.as_ptr().add(base_idx));
+            let i_reg2 = vld1q_f32(input.as_ptr().add(base_idx + 4));
+
+            // Fused Multiply-Add (FMA) equivalents in NEON
+            sum_vec = vfmaq_f32(sum_vec, w_reg1, i_reg1);
+            sum_vec = vfmaq_f32(sum_vec, w_reg2, i_reg2);
+        }
+
+        // Horizontal sum of the 4 lanes in the NEON register
+        let mut total_sum = vaddvq_f32(sum_vec);
+
+        // Handle remainder elements sequentially
+        for idx in base_len..self.len {
+            let byte_idx = idx / 4;
+            let bit_shift = (idx % 4) * 2;
+            let b_val = (self.data[byte_idx] >> bit_shift) & 0b11;
+            let weight = Bit2Val::from_u8(b_val).to_f32();
+            total_sum += weight * input[idx];
+        }
+
+        Ok(total_sum * self.scale)
+    }
+}
+
     pub fn dot_f32(&self, input: &[f32]) -> Result<f32> {
         if self.len != input.len() {
             return Err(QuatError::DimensionMismatch {
@@ -42,6 +98,11 @@ impl Bit2Array {
                 got: input.len(),
             });
         }
+
+        #[cfg(target_arch = "aarch64")]
+{
+    return unsafe { self.dot_f32_neon(input) };
+}
 
         // Provera da li procesor podržava AVX2 u realnom vremenu
         #[cfg(target_arch = "x86_64")]
