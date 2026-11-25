@@ -44,6 +44,57 @@ impl Bit2Val {
             Bit2Val::Val11
         }
     }
+
+    #[inline(always)]
+    pub fn to_f32_affine(self, scale: f32, zero_point: f32) -> f32 {
+        let q_idx = match self {
+            Bit2Val::Val00 => 0.0_f32,
+            Bit2Val::Val01 => 1.0_f32,
+            Bit2Val::Val10 => 2.0_f32,
+            Bit2Val::Val11 => 3.0_f32,
+        };
+        (q_idx - zero_point) * scale
+    }
+
+    #[inline(always)]
+    pub fn quantize_affine(val: f32, scale: f32, zero_point: f32) -> Self {
+        if scale == 0.0 || !scale.is_finite() {
+            return Bit2Val::Val01;
+        }
+        let q = ((val / scale) + zero_point).round().clamp(0.0, 3.0) as u8;
+        Self::from_u8(q)
+    }
+
+    /// Calibrates (scale, zero_point) from a slice using optional percentile/clipping
+    /// to reduce outlier distortion in 2-bit quaternary quantization.
+    pub fn calibrate_affine(values: &[f32], clip_ratio: f32) -> (f32, f32) {
+        if values.is_empty() {
+            return (1.0, 1.5);
+        }
+        let mut min_v = f32::INFINITY;
+        let mut max_v = f32::NEG_INFINITY;
+        for &v in values {
+            if v.is_finite() {
+                if v < min_v {
+                    min_v = v;
+                }
+                if v > max_v {
+                    max_v = v;
+                }
+            }
+        }
+        if !min_v.is_finite() || !max_v.is_finite() || (max_v - min_v).abs() < 1e-12 {
+            return (1.0, 1.5);
+        }
+        let clamped_ratio = clip_ratio.clamp(0.0, 0.25);
+        let span = max_v - min_v;
+        let cal_min = min_v + span * clamped_ratio;
+        let cal_max = max_v - span * clamped_ratio;
+        let scale = ((cal_max - cal_min) / 3.0).max(1e-8);
+        let zero_point = (-cal_min / scale).clamp(0.0, 3.0);
+        (scale, zero_point)
+    }
+    
 }
 
 #[derive(Debug, Clone)]

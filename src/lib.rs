@@ -339,4 +339,201 @@ fn benchmark_mixed_precision_layer() {
     assert_eq!(output.len(), out_features);
 }
 
+#[test]
+    fn test_block_quantized_array_dot_accuracy() {
+        let len = 128;
+        let block_size = 32;
+        let weights: Vec<f32> = (0..len).map(|i| ((i % 5) as f32 - 2.0) * 0.5).collect();
+        let input: Vec<f32> = (0..len).map(|i| (i as f32 * 0.05).cos()).collect();
+
+        let mut b_arr = BlockQuantizedArray::new(weights.len(), block_size);
+        let num_blocks = b_arr.scales.len();
+        for b in 0..num_blocks {
+            let start = b * block_size;
+            let end = (start + block_size).min(weights.len());
+            let max_abs = weights[start..end]
+                .iter()
+                .map(|v| v.abs())
+                .fold(0.0_f32, f32::max);
+            let scale = if max_abs > 0.0 { max_abs / 1.5 } else { 1.0 };
+            b_arr.scales[b] = scale;
+
+            for (offset, &w) in weights[start..end].iter().enumerate() {
+                let idx = start + offset;
+                let q_code: u8 = if w >= scale {
+                    0b01 // +1
+                } else if w <= -scale {
+                    0b11 // -1
+                } else {
+                    0b00 // 0
+                };
+                let byte_idx = idx / 4;
+                let shift = (idx % 4) * 2;
+                b_arr.data[byte_idx] |= q_code << shift;
+            }
+        }
+        let expected: f32 = weights.iter().zip(input.iter()).map(|(w, x)| w * x).sum();
+
+        let start = Instant::now();
+        let mut dot_val: f32 = 0.0;
+        for _ in 0..1000 {
+            dot_val = b_arr.dot(&input).unwrap();
+        }
+        let duration = start.elapsed();
+
+        assert!(dot_val.is_finite(), "Block quantized dot product must be finite");
+        assert!(
+            (dot_val - expected).abs() < expected.abs() * 0.35 + 1.0,
+            "Block quantized dot product diverged too far from f32 reference: got {}, expected {}",
+            dot_val,
+            expected
+        );
+        println!("-> Benchmark [BlockQuantizedArray::dot 1000x (dim=128)]: {:?}", duration);
+    }
+
+    #[test]
+    fn test_mixed_precision_block2_and_act_quantization() {
+        let in_features = 64;
+        let out_features = 32;
+        let rows: Vec<BlockQuantizedArray> = (0..out_features)
+            .map(|r| {
+                let row_weights: Vec<f32> = (0..in_features)
+                    .map(|c| ((r + c) as f32 * 0.03).sin())
+                    .collect();
+                let mut b_arr = BlockQuantizedArray::new(in_features, 32);
+                for b in 0..b_arr.scales.len() {
+                    let start = b * 32;
+                    let end = (start + 32).min(in_features);
+                    let max_abs = row_weights[start..end]
+                        .iter()
+                        .map(|v| v.abs())
+                        .fold(0.0_f32, f32::max);
+                    let scale = if max_abs > 0.0 { max_abs / 1.5 } else { 1.0 };
+                    b_arr.scales[b] = scale;
+
+                    for (offset, &w) in row_weights[start..end].iter().enumerate() {
+                        let idx = start + offset;
+                        let q_code: u8 = if w >= scale {
+                            0b01
+                        } else if w <= -scale {
+                            0b11
+                        } else {
+                            0b00
+                        };
+                        b_arr.data[idx / 4] |= q_code << ((idx % 4) * 2);
+                    }
+                }
+                b_arr
+            })
+            .collect();
+
+        let mut layer = MixedPrecisionLayer {
+            weight_type: LayerWeightType::Block2(rows),
+            quantize_activations: true,
+            act_block_size: 32,
+            act_clip_ratio: 0.95,
+        };
+
+        let input: Vec<f32> = (0..in_features).map(|i| (i as f32 * 0.1).cos()).collect();
+        let mut out_quant_act = vec![0.0f32; out_features];
+
+        let start = Instant::now();
+        for _ in 0..500 {
+            layer.forward(&input, &mut out_quant_act).unwrap();
+        }
+        let duration_qact = start.elapsed();
+
+        layer.quantize_activations = false;
+        let mut out_f32_act = vec![0.0f32; out_features];
+        layer.forward(&input, &mut out_f32_act).unwrap();
+
+        for (q, f) in out_quant_act.iter().zip(out_f32_act.iter()) {
+            assert!(q.is_finite() && f.is_finite());
+            assert!(
+                (q - f).abs() < 2.5,
+                "Quantized activation output deviated too much: {} vs {}",
+                q,
+                f
+            );
+        }
+        println!(
+            "-> Benchmark [MixedPrecisionLayer Block2 + QuantAct 500x]: {:?}",
+            duration_qact
+        );
+    }
+
+    #[test]
+    fn test_advanced_sampling_penalties_and_rng() {
+        let vocab_size = 64;
+        let transformer = Bit2Transformer::new(vocab_size, 16, 1, 2);
+        let mut logits = vec![0.1f32; vocab_size];
+        logits[10] = 5.0; // Dominant token
+        logits[20] = 4.5; // Runner-up token
+        let generated_history = vec![10, 10, 10]; // Heavily penalize token 10
+
+        let start = Instant::now();
+        let mut sampled_20_count = 0;
+        for _ in 0..500 {
+            let tok = Bit2Transformer::sample_advanced(
+                &logits,
+                0.7,
+                5,
+                0.9,
+                2.5,
+                &generated_history,
+            )
+            .unwrap();
+            assert!(tok < vocab_size);
+            if tok == 20 {
+                sampled_20_count += 1;
+            }
+        }
+        let duration = start.elapsed();
+
+        assert!(
+            sampled_20_count > 100,
+            "Repetition penalty should shift probability mass toward token 20, got count={}",
+            sampled_20_count
+        );
+        println!("-> Benchmark [Bit2Transformer::sample_advanced 500x]: {:?}", duration);
+    }
+
+    #[test]
+    fn test_c_api_end_to_end_generation() {
+        use crate::c_api::{
+            quat_transformer_create, quat_transformer_free, quat_transformer_generate, QuatStatus,
+        };
+
+        let model_ptr = unsafe { quat_transformer_create(64, 16, 2, 2) };
+        assert!(!model_ptr.is_null());
+
+        let prompt: [usize; 3] = [1, 5, 9];
+        let max_new_tokens = 8;
+        let mut out_tokens = vec![0usize; 16];
+        let mut out_len: usize = 0;
+
+        let start = Instant::now();
+        let status_gen = unsafe {
+            quat_transformer_generate(
+                model_ptr,
+                prompt.as_ptr(),
+                prompt.len(),
+                max_new_tokens,
+                out_tokens.as_mut_ptr(),
+                out_tokens.capacity(),
+                &mut out_len,
+            )
+        };
+        let duration = start.elapsed();
+
+        assert_eq!(status_gen, QuatStatus::Success);
+        assert!(out_len > 0 && out_len <= out_tokens.capacity());
+        for &tok in &out_tokens[..out_len] {
+            assert!(tok < 64, "C API generated out-of-range token: {}", tok);
+        }
+
+        unsafe { quat_transformer_free(model_ptr) };
+        println!("-> Benchmark [C API quat_transformer_generate]: {:?}", duration);
+    }
+
 }
